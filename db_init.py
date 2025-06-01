@@ -18,6 +18,12 @@ from typing import List
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+
+# Load .env file if it exists
+load_dotenv()
+
 # Assuming the models and config are in the same package
 from database.config import (
     DatabaseConfig,
@@ -162,7 +168,18 @@ def print_database_info(db_manager: DatabaseManager) -> None:
     """Print database information and statistics."""
     try:
         logger.info("Database Information:")
-        logger.info(f"Database URL: {db_manager.config.database_url}")
+        # Hide password in logs for security
+        safe_url = db_manager.config.database_url
+        if '@' in safe_url:
+            # Replace password with asterisks
+            protocol, rest = safe_url.split('://', 1)
+            if '@' in rest:
+                credentials, host_part = rest.split('@', 1)
+                if ':' in credentials:
+                    user, _ = credentials.split(':', 1)
+                    safe_url = f"{protocol}://{user}:***@{host_part}"
+
+        logger.info(f"Database URL: {safe_url}")
 
         with db_manager.get_session() as session:
             # Count records in each table
@@ -185,6 +202,18 @@ def print_database_info(db_manager: DatabaseManager) -> None:
         logger.error(f"Error getting database info: {e}")
 
 
+def print_config_debug_info(config: DatabaseConfig) -> None:
+    """Print configuration information for debugging."""
+    logger.info("Configuration Debug Information:")
+    logger.info(f"  Host: {config.host}")
+    logger.info(f"  Port: {config.port}")
+    logger.info(f"  Database: {config.database}")
+    logger.info(f"  Username: {config.username}")
+    logger.info(f"  Password: {'***' if config.password else 'NOT SET'}")
+    logger.info(f"  Pool Size: {config.pool_size}")
+    logger.info(f"  Echo: {config.echo}")
+
+
 def main():
     """Main function to handle command line arguments and execute actions."""
     parser = argparse.ArgumentParser(
@@ -193,7 +222,7 @@ def main():
 
     parser.add_argument(
         "action",
-        choices=["init", "create", "drop", "recreate", "seed", "check", "validate", "info"],
+        choices=["init", "create", "drop", "recreate", "seed", "check", "validate", "info", "debug"],
         help="Action to perform"
     )
 
@@ -234,9 +263,23 @@ def main():
         help="Force action without confirmation"
     )
 
+    parser.add_argument(
+        "--env-file",
+        default=".env",
+        help="Path to .env file (default: .env)"
+    )
+
     args = parser.parse_args()
 
     try:
+        # Load .env file if specified and exists
+        env_file_path = Path(args.env_file)
+        if env_file_path.exists():
+            logger.info(f"Loading environment variables from: {env_file_path}")
+            load_dotenv(env_file_path)
+        else:
+            logger.warning(f"Environment file not found: {env_file_path}")
+
         # Create database configuration
         config = DatabaseConfig.from_env()
 
@@ -303,6 +346,9 @@ def main():
 
         elif args.action == "info":
             print_database_info(db_manager)
+
+        elif args.action == "debug":
+            print_config_debug_info(config)
 
     except Exception as e:
         logger.error(f"Error executing action '{args.action}': {e}")
