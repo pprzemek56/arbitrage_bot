@@ -202,18 +202,61 @@ with get_db_session() as session:
 ## Project Structure
 
 ```
-arbitrage_bot/
-├── database/
+arbitrage-betting-scraper/
+│
+├── 📁 database/                          # Database layer (existing)
 │   ├── __init__.py
-│   ├── models.py          # SQLAlchemy models
-│   ├── schemas.py         # Pydantic schemas
-│   ├── config.py          # Database configuration
-│   └── migrations/        # Alembic migrations
-├── db_init.py            # Database initialization script
-├── requirements.txt      # Python dependencies
-├── .env                  # Environment variables
-├── .gitignore           # Git ignore rules
-└── README.md            # This file
+│   ├── config.py                         # Database configuration & manager
+│   ├── models.py                         # SQLAlchemy models for betting data
+│   └── schemas.py                        # Pydantic schemas for validation
+│
+├── 📁 scraper/                           # New scraper package
+│   ├── __init__.py
+│   ├── config_schema.py                  # Pydantic config models & validation
+│   ├── fetcher_strategies.py             # Strategy pattern for fetchers
+│   ├── instruction_handlers.py           # Command pattern for instructions
+│   ├── processor_registry.py             # Pluggable field processors
+│   ├── scraper_pipeline.py               # Main orchestration pipeline
+│   ├── cli.py                           # Rich CLI interface
+│   └── testing_utilities.py             # Testing framework & utilities
+│
+├── 📁 configs/                          # Configuration files
+│   ├── static_example.yml               # Static HTML scraper config
+│   ├── interactive_example.yml          # Browser automation config
+│   ├── api_example.yml                  # API scraper config
+│   └── bet365_example.yml               # Real-world example config
+│
+├── 📁 tests/                            # Test suite
+│   ├── __init__.py
+│   ├── conftest.py                      # Pytest configuration
+│   ├── test_config_schema.py            # Config validation tests
+│   ├── test_fetcher_strategies.py       # Fetcher strategy tests
+│   ├── test_instruction_handlers.py     # Instruction handler tests
+│   ├── test_processor_registry.py       # Processor tests
+│   ├── test_scraper_pipeline.py         # Integration tests
+│   └── test_cli.py                      # CLI tests
+│
+├── 📁 logs/                             # Log files
+│   ├── scraper.log                      # Main application log
+│   └── error.log                        # Error-specific log
+│
+├── 📁 results/                          # Scraping results
+│   ├── bet365_results.json              # JSON output files
+│   └── arbitrage_opportunities.json     # Detected opportunities
+│
+├── 📁 docs/                             # Documentation
+│   ├── README.md                        # Main documentation
+│   ├── ARCHITECTURE.md                  # Architecture overview
+│   ├── API.md                           # API documentation
+│   └── DEPLOYMENT.md                    # Deployment guide
+│
+├── 📄 requirements.txt                   # Python dependencies
+├── 📄 .env.example                      # Environment variables template
+├── 📄 .gitignore                        # Git ignore rules
+├── 📄 db_init.py                        # Database initialization script
+├── 📄 comprehensive_example.py          # Complete example demonstration
+├── 📄 monitoring_example.py             # Continuous monitoring script
+└── 📄 setup.py                          # Package setup configuration
 ```
 
 ## Best Practices
@@ -250,4 +293,237 @@ config = DatabaseConfig.from_env()
 config.echo = True
 ```
 
-For any issues, check the logs and validate your environment configuration.
+## Core Components
+
+### Configuration System
+from scraper.config_schema import (
+    ScraperConfig,
+    ConfigLoader,
+    FetcherType,
+    InstructionType
+)
+
+### Fetcher Strategies  
+from scraper.fetcher_strategies import (
+    FetcherFactory,
+    StaticFetcher,
+    BrowserFetcher,
+    APIFetcher,
+    InteractiveFetcher
+)
+
+### Instruction Handlers
+from scraper.instruction_handlers import (
+    InstructionExecutor,
+    InstructionContext,
+    ClickHandler,
+    LoopHandler,
+    CollectHandler
+)
+
+### Field Processors
+from scraper.processor_registry import (
+    processor_registry,
+    register_processor,
+    BaseProcessor,
+    process_field
+)
+
+### Main Pipeline
+from scraper.scraper_pipeline import (
+    ScraperPipeline,
+    ScraperRunner,
+    ScrapingResult,
+    run_scraper_sync
+)
+
+### Testing Utilities
+from scraper.testing_utilities import (
+    ScraperTestCase,
+    MockFetcher,
+    MockPage,
+    assert_config_valid
+)
+
+## Database Integration
+
+### Models (existing)
+from database.models import (
+    Bookmaker,
+    Category,
+    Event,
+    NormalizedEvent,
+    Market,
+    MarketSelection
+)
+
+### Configuration
+from database.config import (
+    DatabaseConfig,
+    DatabaseManager,
+    initialize_database,
+    get_db_session
+)
+
+## Usage Examples
+
+### 1. Simple Scraper Run
+```python
+from scraper.config_schema import ConfigLoader
+from scraper.scraper_pipeline import ScraperRunner
+
+# Load config and run
+config = ConfigLoader.load_from_yaml('configs/bet365.yml')
+runner = ScraperRunner()
+result = runner.run_scraper_sync(config)
+
+print(f"Scraped {len(result.events)} events")
+```
+
+### 2. Custom Processor
+```python
+from scraper.processor_registry import BaseProcessor, register_processor
+
+class MyProcessor(BaseProcessor):
+    def __init__(self):
+        super().__init__("my_processor")
+    
+    def process(self, value, **kwargs):
+        return value.upper()
+
+register_processor(MyProcessor())
+```
+
+### 3. Programmatic Configuration
+```python
+from scraper.config_schema import ScraperConfig, MetaConfig, FetcherConfig
+
+config = ScraperConfig(
+    meta=MetaConfig(
+        name="programmatic_scraper",
+        start_url="https://example.com"
+    ),
+    fetcher=FetcherConfig(type="browser"),
+    database=DatabaseConfig(
+        url="postgresql://localhost/db",
+        bookmaker_name="Example",
+        category_name="Sports"
+    ),
+    instructions=[
+        {
+            "type": "collect",
+            "name": "odds",
+            "container_selector": ".odds-table",
+            "item_selector": ".odds-row",
+            "fields": {
+                "odds": {"selector": ".odds", "attribute": "text"}
+            }
+        }
+    ]
+)
+```
+
+### 4. CLI Usage
+```bash
+# Validate configuration
+python -m scraper.cli validate configs/my_config.yml
+
+# Run scraper
+python -m scraper.cli run configs/my_config.yml --output results.json
+
+# Create new config template  
+python -m scraper.cli create --name "MyBookmaker" --url "https://example.com" --output new_config.yml
+
+# Batch processing
+python -m scraper.cli batch --config-dir configs/ --parallel 3
+```
+
+### 5. Testing
+```python
+from scraper.testing_utilities import ScraperTestCase, run_mock_scraper
+
+class TestMyScraper(ScraperTestCase):
+    async def test_scraper(self):
+        config = self.create_test_config()
+        html = self.create_test_html([{"name": "Test Match"}])
+        
+        result = await run_mock_scraper(config, html)
+        assert len(result.events) > 0
+```
+
+## Key Architecture Features
+
+### 🎯 Strategy Pattern (Fetchers)
+- **StaticFetcher**: Simple HTTP requests for static content
+- **BrowserFetcher**: Playwright for JavaScript-heavy sites  
+- **APIFetcher**: REST API calls with authentication
+- **InteractiveFetcher**: Complex user interactions & workflows
+
+### 🎯 Command Pattern (Instructions)
+- **ClickHandler**: Click elements and wait for responses
+- **LoopHandler**: Pagination, dropdown iteration, conditional loops
+- **CollectHandler**: Extract structured data from DOM
+- **ConditionalHandler**: If/else logic for dynamic pages
+
+### 🎯 Pipeline Architecture
+```
+┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
+│   CONFIG    │───▶│    FETCH     │───▶│   EXTRACT   │───▶│   PERSIST    │
+│ Validation  │    │ (Strategies) │    │ (Handlers)  │    │ (Database)   │
+└─────────────┘    └──────────────┘    └─────────────┘    └──────────────┘
+                           │                    │
+                           ▼                    ▼
+                   ┌──────────────┐    ┌─────────────┐
+                   │  PROCESSORS  │    │   RESULTS   │
+                   │ (Transform)  │    │ (Analysis)  │
+                   └──────────────┘    └─────────────┘
+```
+
+### 🎯 Extensibility Points
+- **Custom Processors**: Add new field transformation logic
+- **Custom Handlers**: Implement new instruction types
+- **Custom Fetchers**: Support new protocols or authentication
+- **Custom Validators**: Add config validation rules
+
+### 🎯 Production Features
+- **Error Handling**: Comprehensive error catching and reporting
+- **Logging**: Structured logging with configurable levels  
+- **Monitoring**: Built-in performance metrics and health checks
+- **Testing**: Full test suite with mocks and fixtures
+- **CLI**: Rich command-line interface for operations
+- **Database**: Full integration with SQLAlchemy models
+
+## Configuration File Structure
+
+```yaml
+meta:                              # Scraper metadata
+  name: "scraper_name"             # Unique identifier
+  description: "Description"       # Human-readable description  
+  start_url: "https://..."         # Starting URL
+  allowed_domains: [...]           # Allowed domains for navigation
+
+fetcher:                           # Fetching strategy
+  type: "static|browser|api|interactive"
+  timeout_ms: 30000               # Request timeout
+  headless: true                  # Browser mode (browser fetchers)
+  headers: {...}                  # HTTP headers
+  auth: {...}                     # Authentication config
+
+database:                          # Database configuration
+  url: "postgresql://..."          # Connection string
+  bookmaker_name: "Bookmaker"     # Bookmaker identification
+  category_name: "Sport"          # Event category
+
+instructions:                      # Scraping instructions
+  - type: "click|wait|loop|if|collect|navigate|input|select|scroll"
+    # ... instruction-specific parameters
+
+collections:                       # Reusable data collection definitions  
+  collection_name:
+    container_selector: "..."
+    item_selector: "..." 
+    fields: {...}
+```
+
+This architecture provides a robust, extensible foundation for arbitrage betting scraping with clean separation of concerns, comprehensive testing, and production-ready features.
+```

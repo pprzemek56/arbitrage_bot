@@ -352,7 +352,6 @@ def main():
 
     except Exception as e:
         logger.error(f"Error executing action '{args.action}': {e}")
-        sys.exit(1)
 
     finally:
         # Clean up database connections
