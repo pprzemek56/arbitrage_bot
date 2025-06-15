@@ -4,7 +4,7 @@ Uses Pydantic for validation and type safety.
 """
 
 from typing import Dict, List, Optional, Union, Any, Literal
-from pydantic import BaseModel, Field, validator, root_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from enum import Enum
 
 
@@ -191,29 +191,30 @@ class ScraperConfig(BaseModel):
     instructions: List[Instruction] = Field([], description="Scraping instructions")
     collections: Dict[str, CollectInstruction] = Field({}, description="Named data collections")
 
-    @validator('instructions')
+    @field_validator('instructions')
+    @classmethod
     def validate_instructions(cls, v):
         """Validate that instructions are properly structured."""
         if not v:
             raise ValueError("At least one instruction must be provided")
         return v
 
-    @root_validator
-    def validate_config(cls, values):
+    @model_validator(mode='after')
+    def validate_config(self):
         """Cross-field validation."""
-        fetcher_config = values.get('fetcher', {})
-        instructions = values.get('instructions', [])
+        fetcher_config = self.fetcher
+        instructions = self.instructions
 
         # If using browser fetcher, ensure we have browser-compatible instructions
-        if fetcher_config.get('type') == FetcherType.BROWSER:
+        if fetcher_config.type == FetcherType.BROWSER:
             browser_instructions = ['click', 'wait', 'input', 'select', 'scroll']
             has_browser_instruction = any(
-                inst.get('type') in browser_instructions for inst in instructions
+                inst.type in browser_instructions for inst in instructions
             )
             if not has_browser_instruction:
                 raise ValueError("Browser fetcher requires at least one browser-compatible instruction")
 
-        return values
+        return self
 
 
 # Forward references
