@@ -208,17 +208,18 @@ class BrowserFetcher(FetcherStrategy):
             await self._playwright.stop()
 
 
-class APIFetcher(FetcherStrategy):
-    """API-specific fetcher with authentication and JSON handling."""
+class APIFetcher:
+    """Enhanced API-specific fetcher with better JSON handling."""
 
     def __init__(self, config: FetcherConfig):
-        super().__init__(config)
+        self.config = config
         self.session = requests.Session()
+        self.logger = logging.getLogger(f"{self.__class__.__module__}.{self.__class__.__name__}")
 
         # Set up headers for API
         default_headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         default_headers.update(config.headers)
         self.session.headers.update(default_headers)
@@ -235,7 +236,7 @@ class APIFetcher(FetcherStrategy):
                 self.session.headers[key_header] = config.auth['key']
 
     async def fetch(self, url: str, **kwargs) -> FetchResult:
-        """Fetch content from API endpoint."""
+        """Fetch content from API endpoint with better error handling."""
         self.logger.info(f"Fetching API content from: {url}")
 
         try:
@@ -251,28 +252,86 @@ class APIFetcher(FetcherStrategy):
             if method in ['POST', 'PUT', 'PATCH'] and self.config.body:
                 request_kwargs['json'] = self.config.body
 
+            # Log request details for debugging
+            self.logger.debug(f"Making {method} request to {url}")
+            self.logger.debug(f"Headers: {dict(self.session.headers)}")
+
             response = self.session.request(method, url, **request_kwargs)
+
+            # Log response details
+            self.logger.debug(f"Response status: {response.status_code}")
+            self.logger.debug(f"Response headers: {dict(response.headers)}")
+            self.logger.debug(f"Response content length: {len(response.text)}")
+
             response.raise_for_status()
 
-            # Try to parse as JSON, fall back to text
+            # Get response content as text
+            content_str = response.text
+
+            # Log first part of response for debugging
+            preview = content_str[:200].replace('\n', '\\n').replace('\r', '\\r')
+            self.logger.debug(f"Response preview: {preview}")
+
+            # Validate that we got JSON-like content
+            content_type = response.headers.get('content-type', '').lower()
+
+            if 'json' not in content_type:
+                self.logger.warning(f"Response content-type is '{content_type}', expected JSON")
+
+            # Check if response looks like JSON
+            stripped_content = content_str.strip()
+            if not (stripped_content.startswith('{') or stripped_content.startswith('[')):
+                self.logger.warning(f"Response doesn't look like JSON. Starts with: {repr(stripped_content[:50])}")
+
+                # If it looks like HTML, log more details
+                if stripped_content.lower().startswith('<!doctype') or stripped_content.lower().startswith('<html'):
+                    self.logger.error("Received HTML response instead of JSON")
+                    self.logger.error(f"This usually means:")
+                    self.logger.error(f"  1. Wrong URL or endpoint")
+                    self.logger.error(f"  2. Authentication required")
+                    self.logger.error(f"  3. Rate limiting or blocking")
+                    self.logger.error(f"  4. API has changed")
+
+            # Test JSON parsing to catch issues early
             try:
-                content = response.json()
-                content_str = str(content)  # Convert to string for consistency
-            except ValueError:
-                content_str = response.text
+                import json
+                parsed_data = json.loads(content_str)
+                self.logger.debug(f"JSON parsing test successful. Data type: {type(parsed_data)}")
+                if isinstance(parsed_data, list):
+                    self.logger.debug(f"JSON array with {len(parsed_data)} items")
+                elif isinstance(parsed_data, dict):
+                    self.logger.debug(f"JSON object with keys: {list(parsed_data.keys())}")
+            except json.JSONDecodeError as e:
+                self.logger.error(f"JSON parsing test failed: {e}")
+                # Show context around the error
+                if hasattr(e, 'pos') and e.pos < len(content_str):
+                    start = max(0, e.pos - 20)
+                    end = min(len(content_str), e.pos + 20)
+                    context = content_str[start:end]
+                    self.logger.error(f"Error context: {repr(context)}")
+                raise
 
             self.logger.debug(f"Successfully fetched API response ({len(content_str)} bytes)")
 
             return FetchResult(
-                content=content_str,
+                content=content_str,  # Always return as string
                 url=response.url,
                 status_code=response.status_code,
                 headers=dict(response.headers),
-                metadata={'method': method, 'content_type': response.headers.get('content-type')}
+                metadata={
+                    'method': method,
+                    'content_type': response.headers.get('content-type'),
+                    'encoding': response.encoding
+                }
             )
 
         except requests.RequestException as e:
             self.logger.error(f"Error fetching API {url}: {e}")
+            # Log more details about the error
+            if hasattr(e, 'response') and e.response is not None:
+                self.logger.error(f"Response status: {e.response.status_code}")
+                self.logger.error(f"Response headers: {dict(e.response.headers)}")
+                self.logger.error(f"Response content: {e.response.text[:500]}")
             raise
 
     async def cleanup(self):

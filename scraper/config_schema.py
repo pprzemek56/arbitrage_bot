@@ -1,8 +1,3 @@
-"""
-Configuration schema for the arbitrage betting scraper.
-Uses Pydantic for validation and type safety.
-"""
-
 from typing import Dict, List, Optional, Union, Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from enum import Enum
@@ -169,8 +164,11 @@ class FetcherConfig(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    """Database configuration."""
-    url: str = Field(..., description="Database connection URL")
+    """Simplified database configuration - only bookmaker and category info.
+
+    Database connection details are read from environment variables:
+    - DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+    """
     bookmaker_name: str = Field(..., description="Bookmaker name for categorization")
     category_name: str = Field("General", description="Event category name")
 

@@ -1,89 +1,138 @@
-"""
-Database configuration and initialization for the arbitrage betting bot.
-"""
-
 import os
+import logging
 from contextlib import contextmanager
 from typing import Generator, Optional
 
 from sqlalchemy import create_engine, Engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
+from sqlalchemy.exc import SQLAlchemyError
 
 from .models import Base
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseConfig:
     """Database configuration class."""
 
-    def __init__(
-            self,
-            host: str = "localhost",
-            port: int = 5432,
-            database: str = "arbitrage_bot",
-            username: str = "postgres",
-            password: str = "",
-            pool_size: int = 10,
-            max_overflow: int = 20,
-            pool_timeout: int = 30,
-            pool_recycle: int = 3600,
-            echo: bool = False
-    ):
-        self.host = host
-        self.port = port
-        self.database = database
-        self.username = username
-        self.password = password
-        self.pool_size = pool_size
-        self.max_overflow = max_overflow
-        self.pool_timeout = pool_timeout
-        self.pool_recycle = pool_recycle
-        self.echo = echo
+    def __init__(self):
+        # Always load from environment variables
+        self.host = os.getenv("DB_HOST", "localhost")
+        self.port = int(os.getenv("DB_PORT", "5432"))
+        self.database = os.getenv("DB_NAME", "arbitrage_bot_db")
+        self.username = os.getenv("DB_USER", "postgres")
+        self.password = os.getenv("DB_PASSWORD", "")
 
-    @classmethod
-    def from_env(cls) -> "DatabaseConfig":
-        """Create database config from environment variables."""
-        return cls(
-            host=os.getenv("DB_HOST", "localhost"),
-            port=int(os.getenv("DB_PORT", "5432")),
-            database=os.getenv("DB_NAME", "arbitrage_bot"),
-            username=os.getenv("DB_USER", "postgres"),
-            password=os.getenv("DB_PASSWORD", ""),
-            pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
-            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
-            pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
-            pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "3600")),
-            echo=os.getenv("DB_ECHO", "false").lower() == "true"
-        )
+        # Pool configuration
+        self.pool_size = int(os.getenv("DB_POOL_SIZE", "10"))
+        self.max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+        self.pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+        self.pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "3600"))
+        self.echo = os.getenv("DB_ECHO", "false").lower() == "true"
 
     @property
     def database_url(self) -> str:
         """Generate database URL for SQLAlchemy."""
-        return f"postgresql://{self.username}:{self.password}@{self.host}:{self.port}/{self.database}"
+        if self.password:
+            return f"postgresql://{self.username}:{self.password}@{self.host}:{self.port}/{self.database}"
+        else:
+            return f"postgresql://{self.username}@{self.host}:{self.port}/{self.database}"
+
+    def test_connection(self) -> bool:
+        """Test database connection."""
+        try:
+            from sqlalchemy import text
+            engine = create_engine(self.database_url, echo=False)
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            engine.dispose()
+            return True
+        except Exception as e:
+            logger.error(f"Database connection test failed: {e}")
+            return False
+
+    def validate_environment(self) -> tuple[bool, list[str]]:
+        """Validate that all required environment variables are set."""
+        errors = []
+
+        if not self.host:
+            errors.append("DB_HOST not set")
+        if not self.database:
+            errors.append("DB_NAME not set")
+        if not self.username:
+            errors.append("DB_USER not set")
+        if not self.password:
+            errors.append("DB_PASSWORD not set")
+
+        return len(errors) == 0, errors
+
+    def __str__(self):
+        """String representation with masked password."""
+        if self.password:
+            masked_url = f"postgresql://{self.username}:***@{self.host}:{self.port}/{self.database}"
+        else:
+            masked_url = f"postgresql://{self.username}@{self.host}:{self.port}/{self.database}"
+
+        return f"DatabaseConfig({masked_url})"
 
 
 class DatabaseManager:
-    """Database manager for handling connections and sessions."""
+    """Database manager with automatic environment-based configuration."""
 
-    def __init__(self, config: DatabaseConfig):
-        self.config = config
+    def __init__(self):
+        self.config = DatabaseConfig()
         self._engine: Optional[Engine] = None
         self._session_factory: Optional[sessionmaker] = None
+        self.logger = logging.getLogger(__name__)
+
+    def validate_config(self) -> None:
+        """Validate database configuration before use."""
+        is_valid, errors = self.config.validate_environment()
+
+        if not is_valid:
+            error_msg = f"Database configuration invalid: {', '.join(errors)}"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
 
     @property
     def engine(self) -> Engine:
         """Get or create the database engine."""
         if self._engine is None:
-            self._engine = create_engine(
-                self.config.database_url,
-                poolclass=QueuePool,
-                pool_size=self.config.pool_size,
-                max_overflow=self.config.max_overflow,
-                pool_timeout=self.config.pool_timeout,
-                pool_recycle=self.config.pool_recycle,
-                echo=self.config.echo,
-                future=True
-            )
+            # Validate configuration first
+            self.validate_config()
+
+            try:
+                self._engine = create_engine(
+                    self.config.database_url,
+                    poolclass=QueuePool,
+                    pool_size=self.config.pool_size,
+                    max_overflow=self.config.max_overflow,
+                    pool_timeout=self.config.pool_timeout,
+                    pool_recycle=self.config.pool_recycle,
+                    echo=self.config.echo,
+                    future=True,
+                    connect_args={
+                        "sslmode": "prefer",
+                        "application_name": "arbitrage_bot"
+                    }
+                )
+
+                # Test the connection
+                from sqlalchemy import text
+                with self._engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+
+                self.logger.info(f"Database engine created successfully: {self.config}")
+
+            except SQLAlchemyError as e:
+                self.logger.error(f"Failed to create database engine: {e}")
+                self.logger.error(f"Database config: {self.config}")
+                raise
+            except Exception as e:
+                self.logger.error(f"Unexpected error creating database engine: {e}")
+                raise
+
         return self._engine
 
     @property
@@ -100,11 +149,21 @@ class DatabaseManager:
 
     def create_tables(self) -> None:
         """Create all database tables."""
-        Base.metadata.create_all(bind=self.engine)
+        try:
+            Base.metadata.create_all(bind=self.engine)
+            self.logger.info("Database tables created successfully")
+        except SQLAlchemyError as e:
+            self.logger.error(f"Failed to create tables: {e}")
+            raise
 
     def drop_tables(self) -> None:
         """Drop all database tables."""
-        Base.metadata.drop_all(bind=self.engine)
+        try:
+            Base.metadata.drop_all(bind=self.engine)
+            self.logger.info("Database tables dropped successfully")
+        except SQLAlchemyError as e:
+            self.logger.error(f"Failed to drop tables: {e}")
+            raise
 
     def recreate_tables(self) -> None:
         """Drop and recreate all database tables."""
@@ -118,8 +177,9 @@ class DatabaseManager:
         try:
             yield session
             session.commit()
-        except Exception:
+        except Exception as e:
             session.rollback()
+            self.logger.error(f"Database session error: {e}")
             raise
         finally:
             session.close()
@@ -134,20 +194,29 @@ class DatabaseManager:
             self._engine.dispose()
             self._engine = None
             self._session_factory = None
+            self.logger.info("Database engine closed")
 
 
 # Global database manager instance
 _db_manager: Optional[DatabaseManager] = None
 
 
-def initialize_database(config: Optional[DatabaseConfig] = None) -> DatabaseManager:
-    """Initialize the database manager."""
+def initialize_database() -> DatabaseManager:
+    """Initialize the database manager using environment variables."""
     global _db_manager
 
-    if config is None:
-        config = DatabaseConfig.from_env()
+    _db_manager = DatabaseManager()
 
-    _db_manager = DatabaseManager(config)
+    # Validate configuration immediately
+    _db_manager.validate_config()
+
+    # Test connection
+    if not _db_manager.config.test_connection():
+        logger.error("Database connection test failed. Please check your environment variables.")
+        logger.error(f"Current config: {_db_manager.config}")
+        raise ConnectionError("Could not connect to database")
+
+    logger.info(f"Database initialized successfully: {_db_manager.config}")
     return _db_manager
 
 

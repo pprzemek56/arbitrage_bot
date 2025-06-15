@@ -1,19 +1,15 @@
-"""
-Main scraper pipeline that orchestrates the entire scraping process.
-Coordinates fetching, instruction execution, data extraction, and persistence.
-"""
-
 import asyncio
 import logging
+import json
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from contextlib import asynccontextmanager
 
 from .config_schema import ScraperConfig, FetcherType
-from .fetcher_strategies import FetcherFactory, FetcherStrategy, InteractiveFetcher
+from .fetcher_strategies import FetcherFactory, FetcherStrategy, InteractiveFetcher, APIFetcher
 from .instruction_handlers import InstructionExecutor, InstructionContext
 from .processor_registry import processor_registry
-from database.config import get_db_manager
+from database.config import initialize_database, get_db_manager
 from database.models import Bookmaker, Category, Event, NormalizedEvent, Market, MarketSelection
 
 logger = logging.getLogger(__name__)
@@ -46,91 +42,217 @@ class ScrapingResult:
         self.metadata['error_count'] = len(self.errors)
 
 
-class DatabasePersister:
-    """Handles database persistence operations."""
+class JSONPathExtractor:
+    """Extract data from JSON using JSONPath-like selectors."""
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
+    def extract(self, data: Any, path: str) -> Any:
+        """Extract value from JSON data using simple JSONPath."""
+        try:
+            if path.startswith('$'):
+                path = path[1:]  # Remove leading $
+
+            if not path:
+                return data
+
+            # Handle array access like [*] or [0:5]
+            if path.startswith('[') and path.endswith(']'):
+                return self._handle_array_access(data, path)
+
+            # Handle dot notation like .field.subfield
+            if path.startswith('.'):
+                path = path[1:]  # Remove leading dot
+
+            parts = path.split('.')
+            current = data
+
+            for part in parts:
+                if '[' in part and ']' in part:
+                    # Handle array access within path like field[0]
+                    field_name, array_part = part.split('[', 1)
+                    if field_name:
+                        current = current[field_name]
+                    current = self._handle_array_access(current, '[' + array_part)
+                else:
+                    current = current[part]
+
+            return current
+
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            self.logger.debug(f"JSONPath extraction failed for path '{path}': {e}")
+            return None
+
+    def _handle_array_access(self, data: Any, array_spec: str) -> Any:
+        """Handle array access patterns like [*], [0], [0:5]."""
+        try:
+            spec = array_spec[1:-1]  # Remove brackets
+
+            if spec == '*':
+                # Return all items
+                return list(data)
+            elif ':' in spec:
+                # Handle slicing like [0:5]
+                parts = spec.split(':')
+                start = int(parts[0]) if parts[0] else None
+                end = int(parts[1]) if parts[1] else None
+                return list(data[start:end])
+            else:
+                # Handle single index like [0]
+                index = int(spec)
+                return data[index]
+
+        except (ValueError, IndexError, TypeError):
+            return None
+
+
+class DatabasePersister:
+    """Simplified database persistence using environment variables."""
+
+    def __init__(self, bookmaker_name: str, category_name: str):
+        self.logger = logging.getLogger(__name__)
+        self.bookmaker_name = bookmaker_name
+        self.category_name = category_name
+        self._db_initialized = False
+
+    def _ensure_database_initialized(self):
+        """Ensure database is initialized from environment variables."""
+        if not self._db_initialized:
+            try:
+                # Initialize database using environment variables
+                initialize_database()
+                self._db_initialized = True
+                self.logger.info("Database initialized from environment variables")
+
+            except Exception as e:
+                self.logger.error(f"Failed to initialize database: {e}")
+                raise
+
     def get_or_create_bookmaker(self, name: str) -> Bookmaker:
         """Get or create bookmaker by name."""
-        db_manager = get_db_manager()
+        self._ensure_database_initialized()
 
-        with db_manager.get_session() as session:
-            bookmaker = session.query(Bookmaker).filter_by(name=name).first()
+        try:
+            db_manager = get_db_manager()
 
-            if not bookmaker:
-                bookmaker = Bookmaker(name=name)
-                session.add(bookmaker)
-                session.commit()
-                self.logger.info(f"Created new bookmaker: {name}")
+            with db_manager.get_session() as session:
+                bookmaker = session.query(Bookmaker).filter_by(name=name).first()
 
-            return bookmaker
+                if not bookmaker:
+                    bookmaker = Bookmaker(name=name)
+                    session.add(bookmaker)
+                    session.commit()
+                    self.logger.info(f"Created new bookmaker: {name}")
+
+                return bookmaker
+        except Exception as e:
+            self.logger.error(f"Database error creating bookmaker: {e}")
+            raise
 
     def get_or_create_category(self, name: str) -> Category:
         """Get or create category by name."""
-        db_manager = get_db_manager()
+        self._ensure_database_initialized()
 
-        with db_manager.get_session() as session:
-            category = session.query(Category).filter_by(name=name).first()
+        try:
+            db_manager = get_db_manager()
 
-            if not category:
-                category = Category(name=name)
-                session.add(category)
-                session.commit()
-                self.logger.info(f"Created new category: {name}")
+            with db_manager.get_session() as session:
+                category = session.query(Category).filter_by(name=name).first()
 
-            return category
+                if not category:
+                    category = Category(name=name)
+                    session.add(category)
+                    session.commit()
+                    self.logger.info(f"Created new category: {name}")
+
+                return category
+        except Exception as e:
+            self.logger.error(f"Database error creating category: {e}")
+            raise
 
     def save_event_data(self, event_data: Dict[str, Any], bookmaker_id: int, category_id: int) -> int:
         """Save event data to database."""
-        db_manager = get_db_manager()
+        self._ensure_database_initialized()
 
-        with db_manager.get_session() as session:
-            # Create event
-            event = Event(
-                bookmaker_id=bookmaker_id,
-                category_id=category_id,
-                status=event_data.get('status', 'active')
-            )
-            session.add(event)
-            session.flush()  # Get event ID
+        try:
+            db_manager = get_db_manager()
 
-            # Create normalized event
-            mapping_hash = self._generate_mapping_hash(event_data)
-            normalized_event = NormalizedEvent(
-                event_id=event.id,
-                mapping_hash=mapping_hash
-            )
-            session.add(normalized_event)
-            session.flush()
-
-            # Save markets and selections
-            for market_data in event_data.get('markets', []):
-                market = Market(
-                    normalized_event_id=normalized_event.id,
-                    market_type=market_data.get('type', 'unknown')
+            with db_manager.get_session() as session:
+                # Create event
+                event = Event(
+                    bookmaker_id=bookmaker_id,
+                    category_id=category_id,
+                    status=event_data.get('active', 'active')
                 )
-                session.add(market)
+                session.add(event)
+                session.flush()  # Get event ID
+
+                # Create normalized event
+                mapping_hash = self._generate_mapping_hash(event_data)
+                normalized_event = NormalizedEvent(
+                    event_id=event.id,
+                    mapping_hash=mapping_hash
+                )
+                session.add(normalized_event)
                 session.flush()
 
-                for selection_data in market_data.get('selections', []):
-                    selection = MarketSelection(
-                        market_id=market.id,
-                        selection=selection_data.get('name', ''),
-                        odds=selection_data.get('odds', 0.0)
-                    )
-                    session.add(selection)
+                # Save markets and selections if they exist
+                markets = event_data.get('markets', [])
+                if not markets and event_data.get('outcome_prices'):
+                    # Create a default market from the event data for Polymarket
+                    markets = [{
+                        'type': event_data.get('market_type', 'binary'),
+                        'selections': [
+                            {
+                                'name': 'Yes',
+                                'odds': float(event_data.get('price_yes', 0.5))
+                            },
+                            {
+                                'name': 'No',
+                                'odds': float(event_data.get('price_no', 0.5))
+                            }
+                        ]
+                    }]
 
-            session.commit()
-            return event.id
+                for market_data in markets:
+                    market = Market(
+                        normalized_event_id=normalized_event.id,
+                        market_type=market_data.get('type', 'unknown')
+                    )
+                    session.add(market)
+                    session.flush()
+
+                    for selection_data in market_data.get('selections', []):
+                        try:
+                            odds_value = float(selection_data.get('odds', 0.0))
+                        except (ValueError, TypeError):
+                            odds_value = 0.0
+
+                        selection = MarketSelection(
+                            market_id=market.id,
+                            selection=selection_data.get('name', ''),
+                            odds=odds_value
+                        )
+                        session.add(selection)
+
+                session.commit()
+                return event.id
+        except Exception as e:
+            self.logger.error(f"Database error saving event: {e}")
+            raise
 
     def _generate_mapping_hash(self, event_data: Dict[str, Any]) -> str:
         """Generate mapping hash for event normalization."""
         import hashlib
 
-        # Use event name, teams, or other identifying information
-        identifier = f"{event_data.get('name', '')}{event_data.get('teams', '')}{event_data.get('date', '')}"
+        # Use market ID or question for Polymarket
+        identifier = (
+            event_data.get('market_id', '') or
+            event_data.get('question', '') or
+            event_data.get('slug', '') or
+            str(event_data)
+        )
         return hashlib.md5(identifier.encode()).hexdigest()
 
 
@@ -141,7 +263,11 @@ class ScraperPipeline:
         self.config = config
         self.fetcher: Optional[FetcherStrategy] = None
         self.instruction_executor = InstructionExecutor()
-        self.persister = DatabasePersister()
+        self.persister = DatabasePersister(
+            config.database.bookmaker_name,
+            config.database.category_name
+        )
+        self.json_extractor = JSONPathExtractor()
         self.logger = logging.getLogger(__name__)
 
     async def run(self) -> ScrapingResult:
@@ -157,6 +283,8 @@ class ScraperPipeline:
             # Execute scraping based on fetcher type
             if self.config.fetcher.type == FetcherType.INTERACTIVE:
                 await self._run_interactive_scraping(result)
+            elif self.config.fetcher.type == FetcherType.API:
+                await self._run_api_scraping(result)
             else:
                 await self._run_simple_scraping(result)
 
@@ -177,6 +305,83 @@ class ScraperPipeline:
 
         return result
 
+    async def _run_api_scraping(self, result: ScrapingResult):
+        """Run API scraping with JSON processing."""
+        try:
+            # Fetch API data
+            fetch_result = await self.fetcher.fetch(self.config.meta.start_url)
+            result.metadata['initial_fetch_size'] = len(fetch_result.content)
+
+            # Parse JSON response
+            try:
+                json_data = json.loads(fetch_result.content)
+                result.metadata['json_parsed'] = True
+                self.logger.info(f"Successfully parsed JSON with {len(json_data) if isinstance(json_data, list) else 1} items")
+            except json.JSONDecodeError as e:
+                result.add_error(f"Failed to parse JSON response: {e}")
+                return
+
+            # Process collect instructions for JSON data
+            for instruction in self.config.instructions:
+                if instruction.type == "collect":
+                    await self._process_json_collection(instruction, json_data, result)
+
+        except Exception as e:
+            result.add_error(f"API scraping error: {str(e)}")
+
+    async def _process_json_collection(self, instruction, json_data: Any, result: ScrapingResult):
+        """Process collect instruction for JSON data."""
+        try:
+            self.logger.info(f"Processing JSON collection: {instruction.name}")
+
+            # Extract container data
+            container_data = self.json_extractor.extract(json_data, instruction.container_selector)
+
+            if not container_data:
+                self.logger.warning(f"No container data found for: {instruction.container_selector}")
+                return
+
+            # Extract items from container
+            items_data = self.json_extractor.extract(container_data, instruction.item_selector)
+
+            if not isinstance(items_data, list):
+                items_data = [items_data] if items_data is not None else []
+
+            collected_items = []
+
+            for item_data in items_data:
+                if instruction.limit and len(collected_items) >= instruction.limit:
+                    break
+
+                # Extract fields from item
+                item_result = {}
+                for field_name, field_config in instruction.fields.items():
+                    try:
+                        value = self.json_extractor.extract(item_data, field_config.selector)
+
+                        # Apply processors if configured
+                        if field_config.processors and value is not None:
+                            value = processor_registry.process_value(
+                                value,
+                                field_config.processors,
+                                context={'base_url': self.config.meta.start_url}
+                            )
+
+                        item_result[field_name] = value if value is not None else field_config.default or ""
+
+                    except Exception as e:
+                        self.logger.warning(f"Error extracting field {field_name}: {e}")
+                        item_result[field_name] = field_config.default or ""
+
+                collected_items.append(item_result)
+
+            # Store collected data
+            result.events.extend(collected_items)
+            self.logger.info(f"Collected {len(collected_items)} items for {instruction.name}")
+
+        except Exception as e:
+            result.add_error(f"JSON collection error: {str(e)}")
+
     async def _run_simple_scraping(self, result: ScrapingResult):
         """Run simple scraping (static/browser fetching)."""
         try:
@@ -188,8 +393,7 @@ class ScraperPipeline:
             if not self.config.instructions:
                 await self._extract_from_content(fetch_result.content, result)
             else:
-                # This would require browser for instructions
-                result.add_error("Instructions require interactive fetcher")
+                result.add_error("Instructions require interactive fetcher for non-API content")
 
         except Exception as e:
             result.add_error(f"Simple scraping error: {str(e)}")
@@ -234,14 +438,9 @@ class ScraperPipeline:
 
     async def _extract_from_content(self, content: str, result: ScrapingResult):
         """Extract data from HTML content using basic extraction rules."""
-        # This is a simplified extraction - in practice you'd want more sophisticated parsing
-        # For now, just log that content was received
         self.logger.info(f"Extracting from content ({len(content)} chars)")
 
-        # Here you would implement HTML parsing logic similar to the original extractor
-        # but adapted for betting data
-
-        # For demonstration, create a dummy event
+        # Create a dummy event for demonstration
         dummy_event = {
             'name': 'Sample Event',
             'status': 'active',
@@ -281,21 +480,8 @@ class ScraperPipeline:
         processed_item = {}
 
         for field_name, field_value in item.items():
-            # Get processor configuration for this field (if any)
-            # This would come from field configuration in instructions
-            processors = []  # Would be loaded from config
-
-            if processors:
-                # Apply processors
-                processed_value = processor_registry.process_value(
-                    field_value,
-                    processors,
-                    context={'base_url': self.config.meta.start_url}
-                )
-            else:
-                processed_value = field_value
-
-            processed_item[field_name] = processed_value
+            # Apply any global processing here if needed
+            processed_item[field_name] = field_value
 
         return processed_item
 
@@ -352,77 +538,3 @@ class ScraperRunner:
     def run_scraper_from_file_sync(self, config_path: str) -> ScrapingResult:
         """Synchronous wrapper for running scraper from file."""
         return asyncio.run(self.run_scraper_from_file(config_path))
-
-
-# Context manager for automatic cleanup
-@asynccontextmanager
-async def scraper_session(config: ScraperConfig):
-    """Context manager for scraper sessions with automatic cleanup."""
-    pipeline = ScraperPipeline(config)
-
-    try:
-        # Initialize fetcher
-        pipeline.fetcher = FetcherFactory.create(config.fetcher)
-        yield pipeline
-    finally:
-        # Cleanup
-        if pipeline.fetcher:
-            await pipeline.fetcher.cleanup()
-
-
-# Convenience functions
-async def run_scraper(config: ScraperConfig) -> ScrapingResult:
-    """Convenience function to run a scraper."""
-    runner = ScraperRunner()
-    return await runner.run_scraper(config)
-
-
-async def run_scraper_from_file(config_path: str) -> ScrapingResult:
-    """Convenience function to run a scraper from file."""
-    runner = ScraperRunner()
-    return await runner.run_scraper_from_file(config_path)
-
-
-def run_scraper_sync(config: ScraperConfig) -> ScrapingResult:
-    """Synchronous convenience function to run a scraper."""
-    runner = ScraperRunner()
-    return runner.run_scraper_sync(config)
-
-
-def run_scraper_from_file_sync(config_path: str) -> ScrapingResult:
-    """Synchronous convenience function to run a scraper from file."""
-    runner = ScraperRunner()
-    return runner.run_scraper_from_file_sync(config_path)
-
-
-# Example usage
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) != 2:
-        print("Usage: python scraper_pipeline.py <config_file>")
-        sys.exit(1)
-
-    config_file = sys.argv[1]
-
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    # Run scraper
-    result = run_scraper_from_file_sync(config_file)
-
-    # Print results
-    print(f"Scraping completed:")
-    print(f"  Events: {len(result.events)}")
-    print(f"  Markets: {len(result.markets)}")
-    print(f"  Selections: {len(result.selections)}")
-    print(f"  Errors: {len(result.errors)}")
-    print(f"  Duration: {result.metadata.get('duration_seconds', 0):.2f}s")
-
-    if result.errors:
-        print("\nErrors:")
-        for error in result.errors:
-            print(f"  - {error}")

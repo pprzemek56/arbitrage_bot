@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Command-line interface for the arbitrage betting scraper.
-Provides a comprehensive CLI for running scrapers and managing configurations.
-"""
-
 import asyncio
 import sys
 import json
@@ -25,7 +19,7 @@ from scraper.config_schema import ConfigLoader, ScraperConfig
 from scraper.scraper_pipeline import ScraperRunner, ScrapingResult
 from scraper.processor_registry import processor_registry
 from scraper.fetcher_strategies import FetcherFactory
-from database.config import initialize_database, DatabaseConfig
+from database.config import initialize_database  # Updated import
 
 console = Console()
 
@@ -100,8 +94,8 @@ def run(ctx, config_file, dry_run, output, no_database):
         if not no_database:
             console.print("[blue]Initializing database...[/blue]")
             try:
-                db_config = DatabaseConfig.from_env()
-                initialize_database(db_config)
+                # Updated: no parameters needed, reads from environment
+                initialize_database()
                 console.print("[green]✓[/green] Database initialized")
             except Exception as e:
                 console.print(f"[red]✗[/red] Database initialization failed: {e}")
@@ -186,7 +180,7 @@ def create(name, url, fetcher, bookmaker, category, output):
             'timeout_ms': 30000
         },
         'database': {
-            'url': 'postgresql://postgres:password@localhost:5432/arbitrage_bot',
+            # Updated: no URL, just bookmaker and category
             'bookmaker_name': bookmaker,
             'category_name': category
         },
@@ -226,6 +220,7 @@ def create(name, url, fetcher, bookmaker, category, output):
 
     console.print(f"[green]✓[/green] Configuration template created: {output}")
     console.print("[yellow]Note:[/yellow] Please edit the selectors and fields to match the target website")
+    console.print("[blue]Info:[/blue] Database connection uses environment variables from .env file")
 
 
 @cli.command()
@@ -375,6 +370,31 @@ def batch(config_dir, parallel, output_dir):
             progress.advance(task)
 
     console.print(f"[blue]Batch processing complete. Results saved to {output_dir}[/blue]")
+
+
+@cli.command()
+def test_db():
+    """Test database connection using environment variables."""
+    try:
+        console.print("[blue]Testing database connection...[/blue]")
+
+        # Test initialization
+        db_manager = initialize_database()
+        console.print("[green]✓[/green] Database initialized successfully")
+
+        # Test basic query
+        with db_manager.get_session() as session:
+            from sqlalchemy import text
+            result = session.execute(text("SELECT current_database()"))
+            db_name = result.scalar()
+            console.print(f"[green]✓[/green] Connected to database: {db_name}")
+
+        console.print("[green]✓[/green] Database test passed!")
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Database test failed: {e}")
+        console.print("[yellow]💡 Make sure your .env file has correct DB_* variables[/yellow]")
+        sys.exit(1)
 
 
 def _display_config_summary(config: ScraperConfig):

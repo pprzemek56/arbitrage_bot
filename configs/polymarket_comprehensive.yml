@@ -1,7 +1,7 @@
 meta:
   name: "polymarket_comprehensive_scraper"
   description: "Comprehensive Polymarket API scraper for prediction market data and arbitrage detection"
-  start_url: "https://gamma-api.polymarket.com/markets"
+  start_url: "https://clob.polymarket.com/markets"
   allowed_domains:
     - "gamma-api.polymarket.com"
     - "clob.polymarket.com"
@@ -16,7 +16,6 @@ fetcher:
     User-Agent: "Polymarket-Arbitrage-Bot/1.0"
 
 database:
-  url: "postgresql://postgres:1qazZAQ!@localhost:5432/arbitrage_bot_db"
   bookmaker_name: "Polymarket"
   category_name: "Prediction Markets"
 
@@ -25,7 +24,7 @@ instructions:
     name: "gamma_markets"
     container_selector: "$"
     item_selector: "$[*]"
-    limit: 100
+    limit: 50
     fields:
       market_id:
         selector: "$.id"
@@ -65,6 +64,25 @@ instructions:
         attribute: "text"
         processors: ["trim"]
 
+      # Individual outcome prices for easier processing
+      price_yes:
+        selector: "$.outcomePrices"
+        attribute: "text"
+        processors:
+          - name: "outcome_price_extractor"
+            args:
+              index: 0
+        default: "0.5"
+
+      price_no:
+        selector: "$.outcomePrices"
+        attribute: "text"
+        processors:
+          - name: "outcome_price_extractor"
+            args:
+              index: 1
+        default: "0.5"
+
       outcomes:
         selector: "$.outcomes"
         attribute: "text"
@@ -73,25 +91,33 @@ instructions:
       start_date:
         selector: "$.startDate"
         attribute: "text"
-        processors: ["date"]
+        processors:
+          - name: "date"
+            args:
+              output_format: "%Y-%m-%d %H:%M:%S"
 
       end_date:
         selector: "$.endDate"
         attribute: "text"
-        processors: ["date"]
+        processors:
+          - name: "date"
+            args:
+              output_format: "%Y-%m-%d %H:%M:%S"
 
       description:
         selector: "$.description"
         attribute: "text"
         processors: ["trim", "clean_text"]
 
-      enable_order_book:
-        selector: "$.enableOrderBook"
-        attribute: "text"
-        processors: ["trim"]
-
       market_type:
         selector: "$.marketType"
         attribute: "text"
         processors: ["trim"]
         default: "binary"
+
+      # Additional metadata
+      enable_order_book:
+        selector: "$.enableOrderBook"
+        attribute: "text"
+        processors: ["trim"]
+        default: "false"

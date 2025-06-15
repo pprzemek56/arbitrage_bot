@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """
-Database initialization script for the arbitrage betting bot.
-
-This script handles:
-- Database creation
-- Table creation
-- Initial data seeding
-- Database migration support
+Fixed database initialization script with proper SQLAlchemy 2.0 syntax.
 """
 
 import argparse
@@ -24,13 +18,7 @@ from dotenv import load_dotenv
 # Load .env file if it exists
 load_dotenv()
 
-# Assuming the models and config are in the same package
-from database.config import (
-    DatabaseConfig,
-    DatabaseManager,
-    initialize_database,
-    get_db_manager
-)
+from database.config import DatabaseManager, initialize_database
 from database.models import (
     Bookmaker,
     Category,
@@ -88,6 +76,7 @@ def seed_initial_data(db_manager: DatabaseManager) -> None:
                 Bookmaker(name="Betfair", config_file="betfair_config.json"),
                 Bookmaker(name="Pinnacle", config_file="pinnacle_config.json"),
                 Bookmaker(name="1xBet", config_file="1xbet_config.json"),
+                Bookmaker(name="Polymarket", config_file="polymarket_config.json"),
             ]
 
             for bookmaker in bookmakers:
@@ -105,6 +94,10 @@ def seed_initial_data(db_manager: DatabaseManager) -> None:
                 Category(name="Boxing"),
                 Category(name="MMA"),
                 Category(name="Cricket"),
+                Category(name="Prediction Markets"),
+                Category(name="Politics"),
+                Category(name="Economics"),
+                Category(name="Entertainment"),
             ]
 
             for category in categories:
@@ -148,7 +141,7 @@ def validate_database_structure(db_manager: DatabaseManager) -> bool:
         with db_manager.get_session() as session:
             for table_name in required_tables:
                 result = session.execute(
-                    text(f"SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = :table_name)"),
+                    text("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = :table_name)"),
                     {"table_name": table_name}
                 )
                 exists = result.scalar()
@@ -168,20 +161,14 @@ def print_database_info(db_manager: DatabaseManager) -> None:
     """Print database information and statistics."""
     try:
         logger.info("Database Information:")
-        # Hide password in logs for security
-        safe_url = db_manager.config.database_url
-        if '@' in safe_url:
-            # Replace password with asterisks
-            protocol, rest = safe_url.split('://', 1)
-            if '@' in rest:
-                credentials, host_part = rest.split('@', 1)
-                if ':' in credentials:
-                    user, _ = credentials.split(':', 1)
-                    safe_url = f"{protocol}://{user}:***@{host_part}"
-
-        logger.info(f"Database URL: {safe_url}")
+        logger.info(f"Database config: {db_manager.config}")
 
         with db_manager.get_session() as session:
+            # Get current database name
+            result = session.execute(text("SELECT current_database()"))
+            current_db = result.scalar()
+            logger.info(f"Connected to database: {current_db}")
+
             # Count records in each table
             bookmaker_count = session.query(Bookmaker).count()
             category_count = session.query(Category).count()
@@ -202,18 +189,6 @@ def print_database_info(db_manager: DatabaseManager) -> None:
         logger.error(f"Error getting database info: {e}")
 
 
-def print_config_debug_info(config: DatabaseConfig) -> None:
-    """Print configuration information for debugging."""
-    logger.info("Configuration Debug Information:")
-    logger.info(f"  Host: {config.host}")
-    logger.info(f"  Port: {config.port}")
-    logger.info(f"  Database: {config.database}")
-    logger.info(f"  Username: {config.username}")
-    logger.info(f"  Password: {'***' if config.password else 'NOT SET'}")
-    logger.info(f"  Pool Size: {config.pool_size}")
-    logger.info(f"  Echo: {config.echo}")
-
-
 def main():
     """Main function to handle command line arguments and execute actions."""
     parser = argparse.ArgumentParser(
@@ -222,39 +197,8 @@ def main():
 
     parser.add_argument(
         "action",
-        choices=["init", "create", "drop", "recreate", "seed", "check", "validate", "info", "debug"],
+        choices=["init", "create", "drop", "recreate", "seed", "check", "validate", "info"],
         help="Action to perform"
-    )
-
-    parser.add_argument(
-        "--db-host",
-        default=None,
-        help="Database host (overrides environment variable)"
-    )
-
-    parser.add_argument(
-        "--db-port",
-        type=int,
-        default=None,
-        help="Database port (overrides environment variable)"
-    )
-
-    parser.add_argument(
-        "--db-name",
-        default=None,
-        help="Database name (overrides environment variable)"
-    )
-
-    parser.add_argument(
-        "--db-user",
-        default=None,
-        help="Database user (overrides environment variable)"
-    )
-
-    parser.add_argument(
-        "--db-password",
-        default=None,
-        help="Database password (overrides environment variable)"
     )
 
     parser.add_argument(
@@ -263,40 +207,12 @@ def main():
         help="Force action without confirmation"
     )
 
-    parser.add_argument(
-        "--env-file",
-        default=".env",
-        help="Path to .env file (default: .env)"
-    )
-
     args = parser.parse_args()
 
     try:
-        # Load .env file if specified and exists
-        env_file_path = Path(args.env_file)
-        if env_file_path.exists():
-            logger.info(f"Loading environment variables from: {env_file_path}")
-            load_dotenv(env_file_path)
-        else:
-            logger.warning(f"Environment file not found: {env_file_path}")
-
-        # Create database configuration
-        config = DatabaseConfig.from_env()
-
-        # Override with command line arguments if provided
-        if args.db_host:
-            config.host = args.db_host
-        if args.db_port:
-            config.port = args.db_port
-        if args.db_name:
-            config.database = args.db_name
-        if args.db_user:
-            config.username = args.db_user
-        if args.db_password:
-            config.password = args.db_password
-
-        # Initialize database manager
-        db_manager = initialize_database(config)
+        # Initialize database manager using environment variables
+        db_manager = initialize_database()
+        logger.info("Database manager initialized from environment variables")
 
         # Execute requested action
         if args.action == "init":
@@ -347,16 +263,11 @@ def main():
         elif args.action == "info":
             print_database_info(db_manager)
 
-        elif args.action == "debug":
-            print_config_debug_info(config)
-
     except Exception as e:
         logger.error(f"Error executing action '{args.action}': {e}")
 
     finally:
-        # Clean up database connections
         try:
-            db_manager = get_db_manager()
             db_manager.close()
         except:
             pass
