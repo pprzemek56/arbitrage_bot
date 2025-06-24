@@ -129,8 +129,8 @@ class DatabasePersister:
                 self.logger.error(f"Failed to initialize database: {e}")
                 raise
 
-    def get_or_create_bookmaker(self, name: str) -> Bookmaker:
-        """Get or create bookmaker by name."""
+    def get_or_create_bookmaker(self, name: str) -> int:
+        """Get or create bookmaker by name and return its ID."""
         self._ensure_database_initialized()
 
         try:
@@ -143,15 +143,16 @@ class DatabasePersister:
                     bookmaker = Bookmaker(name=name)
                     session.add(bookmaker)
                     session.commit()
+                    session.refresh(bookmaker)  # Ensure ID is available
                     self.logger.info(f"Created new bookmaker: {name}")
 
-                return bookmaker
+                return bookmaker.id  # Return ID instead of instance
         except Exception as e:
             self.logger.error(f"Database error creating bookmaker: {e}")
             raise
 
-    def get_or_create_category(self, name: str) -> Category:
-        """Get or create category by name."""
+    def get_or_create_category(self, name: str) -> int:
+        """Get or create category by name and return its ID."""
         self._ensure_database_initialized()
 
         try:
@@ -164,9 +165,10 @@ class DatabasePersister:
                     category = Category(name=name)
                     session.add(category)
                     session.commit()
+                    session.refresh(category)  # Ensure ID is available
                     self.logger.info(f"Created new category: {name}")
 
-                return category
+                return category.id  # Return ID instead of instance
         except Exception as e:
             self.logger.error(f"Database error creating category: {e}")
             raise
@@ -183,7 +185,7 @@ class DatabasePersister:
                 event = Event(
                     bookmaker_id=bookmaker_id,
                     category_id=category_id,
-                    status=event_data.get('active', 'active')
+                    status=event_data.get('status', 'active')  # Fixed: was checking 'active' key
                 )
                 session.add(event)
                 session.flush()  # Get event ID
@@ -488,14 +490,14 @@ class ScraperPipeline:
     async def _persist_results(self, result: ScrapingResult):
         """Persist scraping results to database."""
         try:
-            # Get or create bookmaker and category
-            bookmaker = self.persister.get_or_create_bookmaker(self.config.database.bookmaker_name)
-            category = self.persister.get_or_create_category(self.config.database.category_name)
+            # Get or create bookmaker and category IDs
+            bookmaker_id = self.persister.get_or_create_bookmaker(self.config.database.bookmaker_name)
+            category_id = self.persister.get_or_create_category(self.config.database.category_name)
 
             # Save events
             for event_data in result.events:
                 try:
-                    event_id = self.persister.save_event_data(event_data, bookmaker.id, category.id)
+                    event_id = self.persister.save_event_data(event_data, bookmaker_id, category_id)
                     self.logger.debug(f"Saved event with ID: {event_id}")
                 except Exception as e:
                     result.add_error(f"Failed to save event: {str(e)}")

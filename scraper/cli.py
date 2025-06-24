@@ -15,6 +15,9 @@ from rich.panel import Panel
 from rich.json import JSON
 from rich import print as rprint
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from scraper.config_schema import ConfigLoader, ScraperConfig
 from scraper.scraper_pipeline import ScraperRunner, ScrapingResult
 from scraper.processor_registry import processor_registry
